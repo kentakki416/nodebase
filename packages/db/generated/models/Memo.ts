@@ -192,7 +192,7 @@ export type MemoGroupByOutputType = {
   _max: MemoMaxAggregateOutputType | null
 }
 
-type GetMemoGroupByPayload<T extends MemoGroupByArgs> = Prisma.PrismaPromise<
+export type GetMemoGroupByPayload<T extends MemoGroupByArgs> = Prisma.PrismaPromise<
   Array<
     Prisma.PickEnumerable<MemoGroupByOutputType, T['by']> &
       {
@@ -995,6 +995,11 @@ export type MemoFindManyArgs<ExtArgs extends runtime.Types.Extensions.InternalAr
    * Skip the first `n` Memos.
    */
   skip?: number
+  /**
+   * {@link https://www.prisma.io/docs/concepts/components/prisma-client/distinct Distinct Docs}
+   * 
+   * Filter by unique combinations of Memos.
+   */
   distinct?: Prisma.MemoScalarFieldEnum | Prisma.MemoScalarFieldEnum[]
 }
 

@@ -5,7 +5,7 @@
   "types": "./dist/src/index.d.ts",
   "sideEffects": false,
   "scripts": {
-    "build": "tsc",
+    "build": "prisma generate --config=prisma/prisma.config.ts && tsc",
     "clean": "rm -rf dist generated",
     "dev": "tsc --watch",
     "db:generate": "prisma generate --config=prisma/prisma.config.ts",
