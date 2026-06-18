@@ -47,5 +47,6 @@ export const createPrismaClient = (options: CreatePrismaClientOptions = {}): Pri
   if (!replicaUrl) return base
   const replicaAdapter = new PrismaPg(replicaUrl)
   const replica = new PrismaClient({ adapter: replicaAdapter })
+  /** eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion */
   return base.$extends(readReplicas({ replicas: [replica] })) as unknown as PrismaClient
 }
