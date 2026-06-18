@@ -1,0 +1,308 @@
+name: Terraform AWS Env CI
+# infra/terraform/aws/env/* 配下の HCL に対して fmt / validate / tflint / trivy / plan を実施。
+# account 層は別ワークフロー (terraform-aws-account-ci.yml) で扱う。
+#
+# TODO: 現在はdev環境のみ対象。環境が増えたらmatrix strategyで全環境(dev/prd)に対して実行すること
+# 例:
+#   strategy:
+#     matrix:
+#       environment: [dev, prd]
+#   env:
+#     WORKING_DIR: infra/terraform/aws/env/${{ matrix.environment }}
+
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/terraform-aws-env-ci.yml'
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/terraform-aws-env-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TERRAFORM_VERSION: '1.12'
+  TFLINT_VERSION: 'v0.55.1'
+  TRIVY_VERSION: '0.59.1'
+  WORKING_DIR: infra/terraform/aws/env/dev
+
+jobs:
+  fmt:
+    name: Terraform Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive -diff
+        working-directory: infra/terraform/aws
+
+  validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      # validate には init が必要だが、バックエンドへの接続は不要
+      - name: Terraform Init
+        run: terraform init -input=false -backend=false -lockfile=readonly
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ env.WORKING_DIR }}
+
+  tflint:
+    name: TFLint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # TODO: prd環境が増えたら、matrix strategy に従い、${{ matrix.environment }} に変更すること
+    # deep_check=true（.tflint.hcl）による AWS API 問い合わせに OIDC credentials が必要なため
+    # environment 経由で env-scope の AWS_ROLE_ARN を引く
+    environment: dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+          # GITHUB_TOKEN は GitHub Actions が自動で発行する組み込みトークン
+          # プラグイン取得時の GitHub API レート制限（匿名: 60req/h → 認証: 1000req/h）回避のため指定
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Init TFLint plugins
+        env:
+          # GITHUB_TOKEN は GitHub Actions が自動で発行する組み込みトークン
+          # tflint --init が内部で GitHub Releases API を叩くため、レート制限回避用に渡す
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: tflint --init --config="$(pwd)/.tflint.hcl"
+        working-directory: infra/terraform
+
+      - name: Run TFLint
+        run: tflint --config="$(pwd)/.tflint.hcl" --recursive
+        working-directory: infra/terraform
+
+  trivy:
+    name: Trivy Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # scan-ref / trivy-config / trivyignores のパスは dev 環境のみ対象のためハードコード
+      # TODO: prd環境が増えたら、matrix strategy に従い、aws/env/${{ matrix.environment }} に変更すること
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: infra/terraform/aws/env/dev
+          trivy-config: infra/terraform/aws/env/dev/.trivy.yml
+          trivyignores: infra/terraform/aws/env/dev/.trivyignore
+
+
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [fmt, validate, tflint, trivy]
+    # PR: 自動 plan + PR コメント投稿。workflow_dispatch: 手動 plan-only（apply 前の事前確認用）。
+    # main / develop への push では plan を走らせない（コメント先が無く、apply は terraform-aws-env-apply.yml で別管理）
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    # TODO: prd環境が増えたら、matrix strategy に従い、${{ matrix.environment }} に変更すること
+    environment: dev # GitHub Environments で AWS_ROLE_ARN を環境ごとに分離
+    permissions:
+      id-token: write       # OIDC
+      contents: read
+      pull-requests: write  # plan 結果を PR コメントに投稿するため
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - name: Terraform Init
+        run: terraform init -input=false -lockfile=readonly -lock-timeout=60s
+        working-directory: ${{ env.WORKING_DIR }}
+
+      # -detailed-exitcode: 0=変更なし / 1=エラー / 2=変更あり
+      # continue-on-error で後続のコメント投稿まで必ず到達させ、最後のステップで失敗を再現する。
+      # Pattern A 採用のため tfplan バイナリは保存せず、出力テキストのみ tee で tfplan.txt に保管する。
+      # apply は terraform-aws-env-apply.yml 側で plan を再生成してから適用するため、ここでは plan を保持しない。
+      - name: Terraform Plan
+        id: plan
+        continue-on-error: true
+        run: |
+          set +e
+          set -o pipefail
+          terraform plan -no-color -input=false -lock-timeout=60s -detailed-exitcode 2>&1 | tee tfplan.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        working-directory: ${{ env.WORKING_DIR }}
+
+      # 「Plan: X to add, Y to change, Z to destroy.」の行だけ抽出してサマリ化
+      - name: Extract plan summary
+        id: summary
+        if: steps.plan.outputs.exitcode != '1'
+        run: |
+          summary=$(grep -E "^Plan: |^No changes\." tfplan.txt | tail -1 || echo "(summary unavailable)")
+          {
+            echo "summary<<EOF"
+            echo "$summary"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+        working-directory: ${{ env.WORKING_DIR }}
+
+      # PR に plan 結果をコメント投稿（既存コメントがあれば更新）。
+      # workflow_dispatch では PR コンテキストが無いため skip。結果は Actions ログで確認する。
+      - name: Post plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          EXITCODE: ${{ steps.plan.outputs.exitcode }}
+          SUMMARY: ${{ steps.summary.outputs.summary }}
+          PLAN_PATH: ${{ env.WORKING_DIR }}/tfplan.txt
+          ENVIRONMENT_NAME: dev
+        with:
+          script: |
+            const fs = require('fs')
+
+            const marker = '<!-- terraform-plan-comment -->'
+            const exitcode = process.env.EXITCODE
+            const summary = process.env.SUMMARY || '(summary unavailable)'
+            const planPath = process.env.PLAN_PATH
+            const envName = process.env.ENVIRONMENT_NAME
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+
+            // 失敗時も plan 出力 (tee で tfplan.txt に保存済み) を読んでコメントに含める。
+            // GitHub コメント上限 65,536 文字を考慮して 60,000 で打ち切り、長すぎる場合は
+            // 失敗時は末尾を残す (Terraform のエラーは出力の終盤に出るため)。
+            let plan = ''
+            try {
+              plan = fs.readFileSync(planPath, 'utf8')
+            } catch (e) {
+              plan = `(could not read plan output: ${e.message})`
+            }
+
+            const MAX = 60000
+            const truncatedForFailure = plan.length > MAX
+              ? `_...先頭を切り詰めて末尾のみ表示。完全なログは [Actions run](${runUrl}) を参照_\n\n` + plan.substring(plan.length - MAX)
+              : plan
+            const truncatedForSuccess = plan.length > MAX
+              ? plan.substring(0, MAX) + `\n\n_...truncated. See the [Actions log](${runUrl}) for the full plan._`
+              : plan
+
+            let body
+            if (exitcode === '1') {
+              body = [
+                marker,
+                `## ❌ Terraform Plan: Failed (\`${envName}\`)`,
+                '',
+                `Terraform がエラーを返しました。詳細は [Actions log](${runUrl}) または下記の output を参照。`,
+                '',
+                '<details open><summary>Plan output (error)</summary>',
+                '',
+                '```',
+                truncatedForFailure,
+                '```',
+                '',
+                '</details>',
+              ].join('\n')
+            } else {
+              const icon = exitcode === '0' ? '✅' : '⚠️'
+              const status = exitcode === '0' ? 'No changes' : 'Changes detected'
+
+              body = [
+                marker,
+                `## ${icon} Terraform Plan: ${status} (\`${envName}\`)`,
+                '',
+                `**Summary:** \`${summary}\``,
+                '',
+                '<details><summary>Show plan</summary>',
+                '',
+                '```hcl',
+                truncatedForSuccess,
+                '```',
+                '',
+                '</details>',
+                '',
+                `_Full log: [Actions run](${runUrl})_`,
+              ].join('\n')
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            })
+
+            const existing = comments.find(c => c.body && c.body.includes(marker))
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              })
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              })
+            }
+
+      # plan が失敗していたらジョブ自体も失敗させる（PR check を red にする）
+      - name: Fail on plan error
+        if: steps.plan.outputs.exitcode == '1'
+        run: |
+          echo "Terraform plan failed. See PR comment for details."
+          exit 1

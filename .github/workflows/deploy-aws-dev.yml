@@ -1,0 +1,314 @@
+name: Deploy to AWS dev
+
+# =============================================================================
+# Job 構成
+# =============================================================================
+# build → migrate → ┬→ deploy-api    (rolling 完走)
+#                   └→ deploy-worker (rolling 完走)
+#
+# dev は rolling deploy (env/dev/main.tf の ecs_api / ecs_worker で enable_blue_green = false)
+# のため承認ゲートを持たず、deploy-* は wait-for-service-stability=true で完走を待つ。
+# Blue/Green + GitHub UI 承認が必要な本番デプロイは deploy-aws-prd.yml を参照。
+# =============================================================================
+
+on:
+  workflow_dispatch:
+
+# 並列 deploy を禁止する。先発 run を完走させてから後発 run をキューから流す
+# (cancel-in-progress: false)。同一サービスに対する update-service が重なって
+# task definition の revision が前後するのを防ぐ目的。
+concurrency:
+  group: deploy-aws-dev
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+
+  # =============================================================================
+  # 環境ごとに変える値 — prd 作成時は deploy-aws-prd.yml を新設して下記を書き換える
+  # =============================================================================
+  # AWS リソースタグ (Terraform default_tags の Project / Environment と一致させる)
+  PROJECT_NAME: nodebase
+  ENVIRONMENT: dev
+
+  # ECR (environment 非依存だが project_name は含む)
+  ECR_API_REPO: nodebase-api-server
+  ECR_WORKER_REPO: nodebase-worker
+  ECR_MIGRATION_REPO: nodebase-migration
+
+  # ECS リソース (project_name-environment- プレフィックスを持つ)
+  ECS_CLUSTER: nodebase-dev-cluster
+  ECS_API_SERVICE: nodebase-dev-api
+  ECS_WORKER_SERVICE: nodebase-dev-worker
+  ECS_MIGRATION_TASK_DEF: nodebase-dev-migration
+
+  # VPC リソース解決用 (Terraform 側 modules/vpc の Name タグと一致)
+  ECS_SECURITY_GROUP_NAME: nodebase-dev-ecs
+  PRIVATE_SUBNET_NAME_PREFIX: nodebase-dev-private # `${prefix}*` で wildcard 検索する
+
+jobs:
+  build:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    # GitHub Environments で AWS_ROLE_ARN / AWS_PRIVATE_SUBNET_IDS / AWS_ECS_SECURITY_GROUP_ID を env-scope から取得
+    # prd 用は別ファイル deploy-aws-prd.yml を作る前提（承認ゲートやトリガーが本質的に違うため matrix にしない）
+    environment: dev
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      registry: ${{ steps.ecr.outputs.registry }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: meta
+        run: echo "image_tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # mutable な :latest を避け、コミット SHA タグ (例: :abc123def456) のみを push する
+      - name: Build & push API image
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/${{ env.ECR_API_REPO }}"
+          docker buildx build \
+            --platform linux/amd64 \
+            -f apps/api/Dockerfile \
+            -t "${IMAGE}:${{ steps.meta.outputs.image_tag }}" \
+            --push \
+            .
+
+      - name: Build & push worker image
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/${{ env.ECR_WORKER_REPO }}"
+          docker buildx build \
+            --platform linux/amd64 \
+            -f apps/matching-worker/Dockerfile \
+            -t "${IMAGE}:${{ steps.meta.outputs.image_tag }}" \
+            --push \
+            .
+
+      # migration image は本番 API イメージから分離 (Prisma CLI / devDeps を本番に混入させない)
+      - name: Build & push migration image
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/${{ env.ECR_MIGRATION_REPO }}"
+          docker buildx build \
+            --platform linux/amd64 \
+            -f apps/api/Dockerfile.migration \
+            -t "${IMAGE}:${{ steps.meta.outputs.image_tag }}" \
+            --push \
+            .
+
+  migrate:
+    name: Run Prisma Migration
+    needs: build
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 現行 migration task definition の image を build job の SHA タグに書き換えて新リビジョンを register する。
+      # migration は専用イメージ (nodebase-migration) を参照 — Prisma CLI を本番 API に混入させないため。
+      - name: Register migration task definition with new image
+        id: register
+        env:
+          IMAGE: ${{ needs.build.outputs.registry }}/${{ env.ECR_MIGRATION_REPO }}:${{ needs.build.outputs.image_tag }}
+        run: |
+          TASK_DEF_FILE=$(mktemp)
+          aws ecs describe-task-definition \
+            --task-definition "${ECS_MIGRATION_TASK_DEF}" \
+            --query taskDefinition \
+            | jq --arg IMAGE "${IMAGE}" '
+                .containerDefinitions[0].image = $IMAGE
+                | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+              ' > "${TASK_DEF_FILE}"
+
+          REVISION_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "file://${TASK_DEF_FILE}" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          echo "Registered migration task definition: ${REVISION_ARN}"
+          echo "revision_arn=${REVISION_ARN}" >> "$GITHUB_OUTPUT"
+
+      # Terraform output や GitHub Secrets で固定化せず、AWS リソースのタグから動的に解決する。
+      # 環境を destroy / apply し直しても (subnet ID / SG ID が変わっても) 自動で追従する。
+      - name: Resolve network configuration from tags
+        id: network
+        run: |
+          set -euo pipefail
+
+          # default_tags (Project / Environment) で VPC を特定
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Project,Values=${PROJECT_NAME}" "Name=tag:Environment,Values=${ENVIRONMENT}" \
+            --query 'Vpcs[0].VpcId' --output text)
+
+          if [ -z "${VPC_ID}" ] || [ "${VPC_ID}" = "None" ]; then
+            echo "::error::VPC not found (tag:Project=${PROJECT_NAME} tag:Environment=${ENVIRONMENT})"
+            exit 1
+          fi
+
+          # isolatedのsubnetが含まれないようにnameでフィルタリング (prefix は workflow env で定義)
+          PRIVATE_SUBNETS=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=${VPC_ID}" "Name=tag:Name,Values=${PRIVATE_SUBNET_NAME_PREFIX}*" \
+            --query 'Subnets[*].SubnetId' --output text | tr '\t' ',')
+
+          # ECS task 用 SG (Terraform 側 Name = "${var.name}-ecs")
+          ECS_SG=$(aws ec2 describe-security-groups \
+            --filters "Name=vpc-id,Values=${VPC_ID}" "Name=tag:Name,Values=${ECS_SECURITY_GROUP_NAME}" \
+            --query 'SecurityGroups[0].GroupId' --output text)
+
+          if [ -z "${PRIVATE_SUBNETS}" ] || [ -z "${ECS_SG}" ] || [ "${ECS_SG}" = "None" ]; then
+            echo "::error::Failed to resolve subnets or security group (VPC=${VPC_ID} subnets='${PRIVATE_SUBNETS}' sg='${ECS_SG}')"
+            exit 1
+          fi
+
+          echo "Resolved: VPC=${VPC_ID} subnets=${PRIVATE_SUBNETS} ecs_sg=${ECS_SG}"
+          echo "private_subnets=${PRIVATE_SUBNETS}" >> "$GITHUB_OUTPUT"
+          echo "ecs_security_group=${ECS_SG}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Prisma migration
+        env:
+          PRIVATE_SUBNETS: ${{ steps.network.outputs.private_subnets }}
+          ECS_SECURITY_GROUP: ${{ steps.network.outputs.ecs_security_group }}
+          REVISION_ARN: ${{ steps.register.outputs.revision_arn }}
+        run: |
+          # run-task はタスクを起動するだけで終了は待たない。
+          # Service が無い one-shot タスクなので、起動時に network 設定を渡す必要がある。
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${ECS_CLUSTER}" \
+            --task-definition "${REVISION_ARN}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${PRIVATE_SUBNETS}],securityGroups=[${ECS_SECURITY_GROUP}],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' \
+            --output text)
+
+          echo "Migration task ARN: ${TASK_ARN}"
+
+          # タスクが STOPPED になるまで待つ (成否は問わない)
+          aws ecs wait tasks-stopped \
+            --cluster "${ECS_CLUSTER}" \
+            --tasks "${TASK_ARN}"
+
+          # 診断情報を常に出力 (stopCode / stoppedReason / コンテナの reason / lastStatus を含む)。
+          # exitCode が None / 0 以外のときに「なぜ落ちたか」を Actions ログだけで判定できるようにする。
+          echo "=== Task details ==="
+          aws ecs describe-tasks \
+            --cluster "${ECS_CLUSTER}" \
+            --tasks "${TASK_ARN}" \
+            --query 'tasks[0].{stopCode:stopCode,stoppedReason:stoppedReason,containers:containers[*].{name:name,exitCode:exitCode,reason:reason,lastStatus:lastStatus}}' \
+            --output yaml
+
+          # 成否は describe-tasks のコンテナ exitCode で判定。
+          # 0 = 成功 / それ以外 = 失敗 / None = コンテナが起動すらしていない (image pull 失敗等)
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "${ECS_CLUSTER}" \
+            --tasks "${TASK_ARN}" \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)
+
+          # 失敗時は CloudWatch Logs を Actions ログに転載してから job を fail させる
+          if [ "${EXIT_CODE}" != "0" ]; then
+            echo "Migration failed with exit code ${EXIT_CODE}"
+            aws logs filter-log-events \
+              --log-group-name "/ecs/${ECS_MIGRATION_TASK_DEF}" \
+              --limit 200 \
+              --query 'events[*].message' \
+              --output text || true
+            exit 1
+          fi
+
+  # =========================================================================
+  # API service (rolling)
+  # =========================================================================
+  # API は rolling deploy なので wait-for-service-stability=true で完走を待つ。
+
+  deploy-api:
+    name: Deploy API service
+    needs: [build, migrate]
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download API task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${ECS_API_SERVICE}" \
+            --query taskDefinition \
+            > task-def-api.json
+
+      - name: Render API task definition with new image
+        id: render-api
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def-api.json
+          container-name: ${{ env.ECS_API_SERVICE }}
+          image: ${{ needs.build.outputs.registry }}/${{ env.ECR_API_REPO }}:${{ needs.build.outputs.image_tag }}
+
+      - name: Deploy API service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-api.outputs.task-definition }}
+          service: ${{ env.ECS_API_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+  # =========================================================================
+  # worker service (rolling)
+  # =========================================================================
+  # worker は rolling deploy なので wait-for-service-stability=true で完走を待つ。
+  deploy-worker:
+    name: Deploy worker service
+    needs: [build, migrate]
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download worker task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${ECS_WORKER_SERVICE}" \
+            --query taskDefinition \
+            > task-def-worker.json
+
+      - name: Render worker task definition with new image
+        id: render-worker
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def-worker.json
+          container-name: ${{ env.ECS_WORKER_SERVICE }}
+          image: ${{ needs.build.outputs.registry }}/${{ env.ECR_WORKER_REPO }}:${{ needs.build.outputs.image_tag }}
+
+      - name: Deploy worker service
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-worker.outputs.task-definition }}
+          service: ${{ env.ECS_WORKER_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true

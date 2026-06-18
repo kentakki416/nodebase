@@ -1,0 +1,14 @@
+# 本番環境で許容するルール
+# 段階的に許容範囲を縮め、HTTPS化・Flow Logs有効化・Egress制限を進めること
+
+# ALBが公開されている（公開APIのため意図的）
+AVD-AWS-0053
+
+# HTTPSを使っていない（HTTPS 化前は dev と同様に許容。HTTPS 化と同時にこの行を削除）
+AVD-AWS-0054
+
+# Egress 0.0.0.0/0（ECR/CloudWatch等への通信に必要）
+AVD-AWS-0104
+
+# VPC Flow Logs無効（dev と同等構成のため一旦許容。将来有効化する場合はこの行を削除）
+AVD-AWS-0178

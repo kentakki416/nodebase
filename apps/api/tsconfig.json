@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    // コンパイルターゲット: ES2020にコンパイル
+    "target": "ES2020",
+    // モジュールシステム: CommonJS（Node.js標準）
+    "module": "node16",
+    // 使用するライブラリ: ES2020の標準ライブラリ
+    "lib": ["ES2020"],
+    // 出力ディレクトリ: コンパイル後のファイル出力先
+    "outDir": "./dist",
+    // モジュール解決方法: Node16方式
+    "moduleResolution": "node16",
+    // パスエイリアス: @/でsrcディレクトリを参照可能
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    // ESモジュールとCommonJSの相互運用性を有効化
+    "esModuleInterop": true,
+    // ファイル名の大文字小文字の一貫性を強制
+    "forceConsistentCasingInFileNames": true,
+    // 厳格な型チェックを有効化
+    "strict": true,
+    // ライブラリの型チェックをスキップ（ビルド時間短縮）
+    "skipLibCheck": true,
+    // JSONファイルをモジュールとしてインポート可能にする
+    "resolveJsonModule": true,
+    // 型定義ファイル（.d.ts）を生成
+    "declaration": true,
+    // デバッグ用のソースマップを生成
+    "sourceMap": true,
+    // Vitest のグローバル型（describe / it / expect / vi 等）を認識させる
+    "types": ["node", "vitest/globals"]
+  },
+  // コンパイル対象のファイル（ESLintとIDEがsrcとtestの両方を認識）
+  "include": ["src/**/*", "test/**/*"],
+  // コンパイル対象から除外するディレクトリ
+  "exclude": ["node_modules", "dist"]
+}
