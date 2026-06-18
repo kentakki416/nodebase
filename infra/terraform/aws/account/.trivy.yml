@@ -1,0 +1,10 @@
+# Trivy 設定ファイル（account 共有層）
+severity:
+  - CRITICAL
+  - HIGH
+  - MEDIUM
+
+ignorefile: aws/account/.trivyignore
+
+timeout: 10m
+cache-dir: ~/.trivy/cache

@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/afplay /System/Library/Sounds/Funk.aiff"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/afplay /System/Library/Sounds/Funk.aiff"
+          }
+        ]
+      }
+    ]
+  }
+}

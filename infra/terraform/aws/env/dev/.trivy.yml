@@ -1,0 +1,10 @@
+# Trivy設定ファイル（dev環境）
+severity:
+  - CRITICAL
+  - HIGH
+  - MEDIUM
+
+ignorefile: aws/env/dev/.trivyignore
+
+timeout: 10m
+cache-dir: ~/.trivy/cache

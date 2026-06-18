@@ -1,0 +1,21 @@
+{
+  // Expoのベース設定を継承
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    // 厳格な型チェックを有効化
+    "strict": true,
+    // パスエイリアス: @/でルートディレクトリを参照可能
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    }
+  },
+  // コンパイル対象のファイル
+  "include": [
+    "**/*.ts", // すべてのTypeScriptファイル
+    "**/*.tsx", // すべてのTSXファイル
+    ".expo/types/**/*.ts", // Expoが生成する型定義
+    "expo-env.d.ts" // Expoの環境型定義
+  ]
+}

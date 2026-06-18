@@ -1,0 +1,56 @@
+// Jest(CJS環境)で import.meta エラーを回避するため moduleFormat = "cjs" を指定
+generator client {
+    provider     = "prisma-client"
+    output       = "../generated"
+    moduleFormat = "cjs"
+}
+
+// Data source
+datasource db {
+    provider = "postgresql"
+}
+
+// 認証アカウント（複数プロバイダー対応、 (provider, providerAccountId) で一意）
+// OAuth プロバイダの access_token / refresh_token 等は本アプリでは保持しない
+// （プロバイダ側で発行・管理し、アプリは取得した user info を DB に保存後は内部 JWT で完結する）
+model AuthAccount {
+    id                Int      @id @default(autoincrement())
+    userId            Int      @map("user_id")
+    /// "google" | "github" | "credentials" など
+    provider          String
+    /// プロバイダー側のユーザー ID
+    providerAccountId String   @map("provider_account_id")
+    createdAt         DateTime @default(now()) @map("created_at")
+    updatedAt         DateTime @updatedAt @map("updated_at")
+
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@unique([provider, providerAccountId])
+    @@index([userId])
+    @@map("auth_accounts")
+}
+
+// メモ
+model Memo {
+    id        Int      @id @default(autoincrement())
+    title     String   @db.VarChar(255)
+    body      String   @db.Text
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    @@map("memos")
+}
+
+// ユーザー（認証プロバイダー非依存）
+model User {
+    id        Int      @id @default(autoincrement())
+    email     String?  @unique
+    name      String?
+    avatarUrl String?  @map("avatar_url")
+    createdAt DateTime @default(now()) @map("created_at")
+    updatedAt DateTime @updatedAt @map("updated_at")
+
+    accounts AuthAccount[]
+
+    @@map("users")
+}

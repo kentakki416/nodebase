@@ -1,0 +1,11 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+      // ビルド用: srcディレクトリのみをビルド対象とする
+      "rootDir": "./src"
+    },
+    // ビルド対象: srcのみ
+    "include": ["src/**/*"],
+    "exclude": ["node_modules", "dist", "test"]
+  }
+  

@@ -1,0 +1,61 @@
+name: Lint
+
+on:
+  push:
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+      - 'turbo.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'package.json'
+      - '.pnpmfile.cjs'
+      - '.github/workflows/lint.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read    
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true # 同一グループのワークフローが実行中ならキャンセル
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # HEAD^とHEADのコミットまで取得
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.0.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm' # .pnpm-storeをキャッシュ
+
+      - name: Cache Turbo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-turbo-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile # pnpm-lock.yamlを固定
+
+      - name: Run lint on changed packages
+        run: pnpm turbo run lint --filter="...[HEAD^]" # commitの差分の中で変更されたパッケージとその依存パッケージを対象

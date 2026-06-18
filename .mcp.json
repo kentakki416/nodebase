@@ -1,0 +1,96 @@
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ]
+    },
+    "aws-knowledge-mcp-server": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://knowledge-mcp.global.api.aws"
+      ]
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${env:MY_GITHUB_PAT}"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest"
+      ]
+    },
+    "serena": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "ide-assistant"
+      ]
+    },
+    "postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "${env:POSTGRES_CONNECTION_STRING}"
+      ]
+    },
+    "drawio": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@drawio/mcp"
+      ]
+    },
+    "lottie-creator": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@lottiefiles/creator-mcp@latest"
+      ]
+    },
+    "vercel": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://mcp.vercel.com"
+      ]
+    },
+    "_disabled_notion": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@notionhq/notion-mcp-server"
+      ],
+      "env": {
+        "OPENAPI_MCP_HEADERS": "{\"Authorization\":\"Bearer ${env:NOTION_API_TOKEN}\",\"Notion-Version\":\"2022-06-28\"}"
+      }
+    },
+    "_disabled_slack": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@anthropic-ai/mcp-server-slack"
+      ],
+      "env": {
+        "SLACK_BOT_TOKEN": "${env:SLACK_BOT_TOKEN}",
+        "SLACK_TEAM_ID": "${env:SLACK_TEAM_ID}"
+      }
+    }
+  }
+}
+

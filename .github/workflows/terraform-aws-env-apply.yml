@@ -1,0 +1,79 @@
+name: Terraform AWS Env Apply
+
+# =============================================================================
+# infra/terraform/aws/env/* の手動 apply 専用ワークフロー。
+# account 層は別ワークフロー (terraform-aws-account-apply.yml) で扱う。
+#
+# 運用ルール:
+# - dev: workflow_dispatch から実行。承認ゲートなし
+# - prd: workflow_dispatch から実行。`prd` Environment の Required reviewers で承認ゲート（将来）
+#
+# 使い方:
+# 1. PR で terraform-aws-env-ci.yml の plan を必ず確認してからマージ
+# 2. main にマージ後、Actions → Terraform AWS Env Apply → Run workflow
+# 3. environment を選択して実行
+# 4. prd の場合は GitHub UI で reviewer の承認待ちになる
+# =============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - dev
+          # TODO: prd 環境が追加されたら以下のコメントを外す。prd Environment には Required reviewers を設定すること
+          # - prd
+
+permissions:
+  id-token: write
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: terraform-apply-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  TERRAFORM_VERSION: "1.12"
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  apply:
+    name: Terraform Apply (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Environment 経由で AWS_ROLE_ARN を取得し、prd の場合は Required reviewers の承認ゲートが効く
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init -input=false -lockfile=readonly -lock-timeout=120s
+        working-directory: infra/terraform/aws/env/${{ inputs.environment }}
+
+      # plan を一度走らせて差分を可視化（apply ログだけだと事後追跡しづらいため）
+      - name: Terraform Plan
+        run: terraform plan -no-color -input=false -lock-timeout=120s -out=tfplan
+        working-directory: infra/terraform/aws/env/${{ inputs.environment }}
+
+      - name: Terraform Apply
+        run: terraform apply -no-color -input=false -lock-timeout=120s -auto-approve tfplan
+        working-directory: infra/terraform/aws/env/${{ inputs.environment }}

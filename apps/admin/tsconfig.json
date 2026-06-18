@@ -1,0 +1,51 @@
+{
+  "compilerOptions": {
+    // コンパイルターゲット: ES2017にコンパイル
+    "target": "ES2017",
+    // 使用するライブラリ: DOM、DOM反復処理、ESNext
+    "lib": ["dom", "dom.iterable", "esnext"],
+    // JavaScriptファイルの許可
+    "allowJs": true,
+    // ライブラリの型チェックをスキップ（ビルド時間短縮）
+    "skipLibCheck": true,
+    // 厳格な型チェックを有効化
+    "strict": true,
+    // ファイルを出力しない（Next.jsがビルドを担当）
+    "noEmit": true,
+    // ESモジュールとCommonJSの相互運用性を有効化
+    "esModuleInterop": true,
+    // モジュールシステム: ESNext
+    "module": "esnext",
+    // モジュール解決方法: bundler（Next.js用）
+    "moduleResolution": "bundler",
+    // JSONファイルをモジュールとしてインポート可能にする
+    "resolveJsonModule": true,
+    // 各ファイルを独立したモジュールとして扱う（型チェックの高速化）
+    "isolatedModules": true,
+    // JSXの変換方法: React 17+の新しいJSX変換を使用
+    "jsx": "react-jsx",
+    // インクリメンタルコンパイルを有効化（ビルド時間短縮）
+    "incremental": true,
+    // Next.jsプラグイン: Next.jsの型チェック機能を有効化
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    // パスエイリアス: @/でルートディレクトリを参照可能
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  // コンパイル対象のファイル
+  "include": [
+    "next-env.d.ts", // Next.jsの型定義
+    "**/*.ts", // すべてのTypeScriptファイル
+    "**/*.tsx", // すべてのTSXファイル
+    ".next/types/**/*.ts", // Next.jsが生成する型定義
+    ".next/dev/types/**/*.ts", // Next.js開発時の型定義
+    "**/*.mts" // すべての.mtsファイル
+  ],
+  // コンパイル対象から除外するディレクトリ
+  "exclude": ["node_modules"]
+}
