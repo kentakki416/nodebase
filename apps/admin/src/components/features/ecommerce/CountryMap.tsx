@@ -22,13 +22,6 @@ interface CountryMapProps {
   mapColor?: string;
 }
 
-type MarkerStyle = {
-  initial: {
-    fill: string;
-    r: number; // Radius for markers
-  };
-};
-
 type Marker = {
   latLng: [number, number];
   name: string;
@@ -46,14 +39,12 @@ export default function CountryMap({ mapColor }: CountryMapProps) {
     <VectorMap
       map={worldMill}
       backgroundColor="transparent"
-      markerStyle={
-        {
-          initial: {
-            fill: "#465FFF",
-            r: 4, // Custom radius for markers
-          }, // Type assertion to bypass strict CSS property checks
-        } as MarkerStyle
-      }
+      markerStyle={{
+        initial: {
+          fill: "#465FFF",
+          r: 4, // Custom radius for markers
+        },
+      }}
       markersSelectable={true}
       markers={
         [
